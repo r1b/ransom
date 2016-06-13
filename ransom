@@ -1,0 +1,141 @@
+#!/bin/bash
+# ransom - Tweet screenshorts
+# Robert C Jensen <robert.cole.jensen@gmail.com>
+
+# TODO:
+# [ ] `Argument list too long` for bigger images
+# [ ] Blank status w/o unicode blank
+# [ ] Error handling
+# [ ] Don't use slow-as-fuck while read
+# [ ] printf %b instead of literal newlines
+# [ ] Support query string parameters
+# [ ] Option to support alt text for a11y
+
+POSIXLY_CORRECT=🙃
+
+urlencode () {
+    IFS="
+"
+    printf %s $1 | grep -o . | while read glyph
+    do
+        case $glyph in
+            [0-9A-Za-z-._~]) printf $glyph;;
+            *) for byte in $(printf %s $glyph | xxd -c1 -p -u); do printf "%%%s" $byte; done
+        esac
+    done
+}
+
+encode_params () {
+    IFS="
+"
+    params=$1
+    sep=$2
+    quote_values=$3
+
+    count=$(printf %s "$params" | wc -l)
+
+    printf %s "$params" | sort | while read line
+    do
+        key=$(urlencode $(printf %s "$line" | awk '{print $1}'))
+        value=$(urlencode $(printf %s "$line" | awk '{print $2}'))
+
+        if [ -n "$quote_values" ]
+        then
+            value=\"$value\"
+        fi
+
+        printf %s $key=$value
+
+        if [ $count -gt 1 ]
+        then
+            printf %s "$sep"
+        fi
+        count=$(($count-1))
+    done
+}
+
+make_signature () {
+    method=$1
+    url=$2
+    params=$3
+
+    method=$(printf $method | tr '[a-z]' '[A-Z]')
+    url=$(urlencode $url)
+    params=$(urlencode $(encode_params "$params" \&))
+
+    consumer_secret=$(urlencode $TWITTER_CONSUMER_SECRET)
+    token_secret=$(urlencode $TWITTER_TOKEN_SECRET)
+
+    base_string="$method&$url&$params"
+    signing_key="$consumer_secret&$token_secret"
+
+    printf %s $base_string | openssl dgst -sha1 -hmac $signing_key -binary | base64 -w 0
+}
+
+make_authorization () {
+    # https://dev.twitter.com/oauth/overview/authorizing-requests
+    method=$1
+    url=$2
+    params=$3
+
+    oauth_params=""
+
+    oauth_params="${oauth_params}oauth_consumer_key $TWITTER_CONSUMER_KEY
+"
+    oauth_params="${oauth_params}oauth_nonce $(head -c 32 /dev/urandom | base64 -w 0)
+"
+    oauth_params="${oauth_params}oauth_signature_method HMAC-SHA1
+"
+    oauth_params="${oauth_params}oauth_timestamp $(date +%s)
+"
+    oauth_params="${oauth_params}oauth_token $TWITTER_TOKEN
+"
+    oauth_params="${oauth_params}oauth_version 1.0
+"
+
+    oauth_signature=$(make_signature $method $url "${params}${oauth_params}")
+    oauth_params="${oauth_params}oauth_signature $oauth_signature
+"
+
+    header=OAuth" "$(encode_params "$oauth_params" ", " yes)
+    printf %s "$header"
+}
+
+api_request () {
+    method=$1
+    url=$2
+    params=$3
+
+    authorization=$(make_authorization $method $url "$params")
+    params=$(encode_params "$params" \&)
+
+    curl -s -X $method -d $params \
+         -H "Accept: application/json" \
+         -H "Authorization: $authorization" \
+         $url
+}
+
+upload_image () {
+    media_data=$1
+
+    params="media_data $media_data
+"
+    response=$(api_request POST https://upload.twitter.com/1.1/media/upload.json "$params")
+    printf %s $response | jq -r '.media_id_string'
+}
+
+post_status () {
+    media_id=$1
+
+    params="status 　
+"
+    params="${params}media_ids $media_id
+"
+    api_request POST https://api.twitter.com/1.1/statuses/update.json "$params"
+}
+
+text=$(cat)
+convert -background white -fill black -font Symbola -pointsize 72 -blur 2x8 \
+       -wave 10x500 label:"$text" ransom.png
+
+post_status $(upload_image $(base64 -w 0 ransom.png))
