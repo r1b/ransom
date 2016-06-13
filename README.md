@@ -7,5 +7,7 @@ Tweet screenshorts
 
 ## Usage
 `printf msg | ./ransom`
+
 `./ransom < msg`
+
 `./ransom <<< "msg"`
